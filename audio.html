@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="X-UA-Compatible" content="ie=edge">
+  <title>Audio Visualizer</title>
+  <style>
+    html, body {
+        margin: 0;
+        height: 100%;
+        background-color: lightpink;
+    }
+    .c {
+        width: 100%;
+        height: 100%;
+        display: block;
+    }
+    .hidden {
+      display: none;
+    }
+    .start {
+      border: 0.6rem solid black;
+      background-color: lightpink;
+      color: black;
+      border-radius: 2rem;
+      font-size: 2.5rem;
+      padding: 2rem;
+      width: 16rem;
+    }
+    .title {
+      font-size: 3rem;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      font-weight: bold;
+    }
+    .wrapper {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      width: 100%;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrapper">
+    <p class="title">Put on some music ♫</p>
+    <button class="start">Start</button>
+  </div>
+  
+  <canvas id="c" class="hidden"></canvas>
+
+  <script type="module">
+
+    import * as THREE from 'https://threejsfundamentals.org/threejs/resources/threejs/r119/build/three.module.js';
+
+    const init = () => {
+      let analyser,
+        source,
+        audioData,
+        uniforms,
+        scene,
+        cubes;
+
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const vertexShader = `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+        }`;
+
+      const fragmentShader = `
+        uniform vec3 iResolution;
+        uniform float iTime;
+        uniform sampler2D iChannel0;
+        varying vec2 vUv;
+        void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
+          vec3 c;
+          float z = 0.1 * iTime;
+          vec2 uv = fragCoord / iResolution.xy;
+          vec2 p = uv - 0.5;
+          p.x *= iResolution.x / iResolution.y;
+          float l = 0.2 * length(p);
+          for (int i = 0; i < 3; i++) {
+            z += 0.07;
+            uv += p / l * (sin(z) + 1.0) * abs(sin(l * 9.0 - z * 1.0));
+            c[i] = 0.01 / length(abs(mod(uv, 1.0) - 0.5));
+          }
+          float intensity = texture2D(iChannel0, vec2(l, 0.5)).x;
+          fragColor = vec4(c / l * intensity, iTime);
+        }
+        void main() {
+          //mainImage(gl_FragColor, gl_FragCoord.xy);
+          mainImage(gl_FragColor, vUv * iResolution.xy);
+        }`
+
+      document.querySelector('button').addEventListener('click', function () {
+        let element = document.getElementById("c");
+        let div = document.querySelector('div');
+        element.classList.remove('hidden');
+        element.classList.add('c');
+        div.classList.add('hidden');
+        div.classList.remove('wrapper');
+
+        audioCtx.resume().then(() => {
+          startMic();
+        });
+      });
+
+      const canvas = document.querySelector('#c');
+      const renderer = new THREE.WebGLRenderer({ canvas });
+      renderer.autoClearColor = false;
+
+      const camera = new THREE.OrthographicCamera(
+        -1,
+        1,
+        1,
+        -1,
+        -1,
+        1,
+      );
+
+      const createScene = () => {
+        scene = new THREE.Scene();
+        const plane = new THREE.PlaneBufferGeometry(2, 2);
+
+        uniforms = {
+          iTime: { value: 0 },
+          iResolution: { value: new THREE.Vector3(1, 1, 1) },
+          iChannel0: { value: new THREE.DataTexture(audioData, analyser.fftSize / 2, 1, THREE.LuminanceFormat) }
+        };
+
+        const material = new THREE.ShaderMaterial({
+          vertexShader: vertexShader,
+          fragmentShader: fragmentShader,
+          uniforms,
+        });
+
+        const boxWidth = 1;
+        const boxHeight = 1;
+        const boxDepth = 1;
+        const geometry = new THREE.BoxGeometry(boxWidth, boxHeight, boxDepth);
+
+        const makeInstance = (geometry, x) => {
+          const cube = new THREE.Mesh(geometry, material);
+          scene.add(cube);
+          cube.position.x = x;
+          return cube;
+        }
+
+        cubes = [
+          makeInstance(geometry, 0),
+        ];
+
+        scene.add(new THREE.Mesh(plane, material));
+      }
+
+      navigator.getUserMedia = navigator.getUserMedia ||
+        navigator.webkitGetUserMedia ||
+        navigator.mozGetUserMedia ||
+        navigator.msGetUserMedia;
+
+      const resizeRendererToDisplaySize = (renderer) => {
+        const needResize = canvas.width !== window.innerWidth ||
+          canvas.height !== window.innerHeight;
+        if (needResize) {
+          renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+        return needResize;
+      }
+
+      const animate = (time) => {
+        requestAnimationFrame(animate);
+
+        resizeRendererToDisplaySize(renderer);
+
+        analyser.getByteFrequencyData(audioData);
+
+        time *= 0.001;
+
+        cubes.forEach((cube, ndx) => {
+          const speed = 1 + ndx * .1;
+          const rot = time * speed;
+          cube.rotation.x = rot;
+          cube.rotation.y = rot;
+        });
+
+        uniforms.iTime.value = time;
+        uniforms.iChannel0.value.needsUpdate = true;
+
+        renderer.render(scene, camera);
+      }
+
+      const startMic = () => {
+        if (navigator.getUserMedia) {
+          navigator.getUserMedia({ audio: true, video: false }, function (stream) {
+
+            analyser = audioCtx.createAnalyser();
+            source = audioCtx.createMediaStreamSource(stream);
+
+            source.connect(analyser);
+
+            analyser.fftSize = 1024;
+            audioData = new Uint8Array(analyser.frequencyBinCount);
+
+            createScene();
+            animate();
+          }, function () { });
+        }
+      }
+    }
+    init();
+
+  </script>
+</body>
+
+</html>
